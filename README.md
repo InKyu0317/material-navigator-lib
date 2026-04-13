@@ -106,7 +106,8 @@ async def list_oxides(category: str | None = None):
 
 ## 로드맵
 
-- [ ] GlassPy 연동 물성 예측 (`predict` extra)
+- [ ] **조성 최적화 예측** (`predict` extra)  
+  목표 물성(Tg, CTE, 밀도, 굴절률 등)과 사용 가능한 산화물 목록을 입력하면, 해당 물성을 만족하는 최적의 산화물 조합 및 배합비(wt%)를 예측하는 기능. GlassPy(GlassNet) 기반 물성 모델과 연동하여 구현 예정.
 - [ ] 원료(raw material) → 산화물 변환 유틸리티
 - [ ] 배치 계산 (batch calculation) API
 
