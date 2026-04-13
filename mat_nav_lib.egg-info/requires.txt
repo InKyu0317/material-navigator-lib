@@ -1,3 +1,0 @@
-
-[predict]
-glasspy>=0.6.0

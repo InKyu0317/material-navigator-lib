@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: mat-nav-lib
-Version: 0.1.0
-Summary: Material Navigator Library – glass oxide data and property prediction utilities
-License: MIT
-Requires-Python: >=3.10
-Provides-Extra: predict
-Requires-Dist: glasspy>=0.6.0; extra == "predict"
