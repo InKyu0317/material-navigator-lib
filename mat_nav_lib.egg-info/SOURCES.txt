@@ -1,0 +1,8 @@
+pyproject.toml
+mat_nav_lib/__init__.py
+mat_nav_lib/oxides.py
+mat_nav_lib.egg-info/PKG-INFO
+mat_nav_lib.egg-info/SOURCES.txt
+mat_nav_lib.egg-info/dependency_links.txt
+mat_nav_lib.egg-info/requires.txt
+mat_nav_lib.egg-info/top_level.txt
