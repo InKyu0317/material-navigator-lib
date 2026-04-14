@@ -10,4 +10,4 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 
 [project.optional-dependencies]
-predict = ["glasspy>=0.6.0"]
+predict = ["glasspy>=0.6.0", "scikit-optimize>=0.10"]
