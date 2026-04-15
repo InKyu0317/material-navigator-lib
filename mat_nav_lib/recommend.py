@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Any, Callable
 
 from .oxides import OXIDE_LIST
 
@@ -147,6 +148,118 @@ def predict_properties(
     return result
 
 
+# ── Convenience wrappers ──────────────────────────────────────────
+
+def predict_from_wt(
+    oxides_wt: dict[str, float],
+    targets: list[str],
+) -> dict[str, float]:
+    """Predict properties from a **wt%** composition (handles unicode).
+
+    Normalises formula keys, converts wt→mol, then calls
+    :func:`predict_properties`.
+    """
+    normed = {_normalise_formula(k): v for k, v in oxides_wt.items()}
+    mol = wt_to_mol(normed)
+    return predict_properties(mol, targets)
+
+
+# ── Oxide scoring (GlassNet sensitivity) ──────────────────────────
+
+_OXIDE_INFO: dict[str, dict[str, str]] = {
+    o["formula"]: {"name_ko": o["name_ko"], "category": o["category"]}
+    for o in OXIDE_LIST
+}
+
+
+def score_oxides(
+    base_composition_wt: dict[str, float],
+    target_properties: list[str],
+    priority_weights: list[float] | None = None,
+) -> list[dict[str, Any]]:
+    """Score candidate oxides by their GlassNet sensitivity.
+
+    For each oxide **not** already in *base_composition_wt*, adds 5 wt%
+    (proportionally reducing the rest), predicts properties with GlassNet,
+    and computes a weighted deviation score.
+
+    Args:
+        base_composition_wt: Current composition in wt%.
+        target_properties: UI property names (keys of ``PROPERTY_MAP``).
+        priority_weights: Per-property weights (same length as
+            *target_properties*).  Defaults to ``[1, 0.5, 0.25, …]``.
+
+    Returns:
+        List of ``{formula, name_ko, category, score, stars}`` sorted
+        descending by *score*.
+    """
+    # Normalise & build baseline
+    base = {_normalise_formula(k): v for k, v in base_composition_wt.items()}
+    total_wt = sum(base.values())
+    if total_wt <= 0:
+        return []
+    base_norm = {k: v / total_wt * 100.0 for k, v in base.items()}
+
+    if priority_weights is None:
+        priority_weights = [0.5 ** i for i in range(len(target_properties))]
+
+    # Baseline prediction
+    base_mol = wt_to_mol(base_norm)
+    baseline_pred = predict_properties(base_mol, target_properties)
+
+    existing = set(base_norm.keys())
+    raw_scores: list[tuple[str, float]] = []
+
+    for formula in _MOLAR_MASS:
+        if formula in existing:
+            continue
+
+        # Add 5 wt% of candidate, proportionally reduce base
+        factor = 95.0 / 100.0
+        trial = {k: v * factor for k, v in base_norm.items()}
+        trial[formula] = 5.0
+
+        trial_mol = wt_to_mol(trial)
+        trial_pred = predict_properties(trial_mol, target_properties)
+
+        # Weighted absolute change
+        raw = 0.0
+        for i, prop in enumerate(target_properties):
+            bp = baseline_pred.get(prop)
+            tp = trial_pred.get(prop)
+            if bp is None or tp is None or math.isnan(bp) or math.isnan(tp):
+                continue
+            scale = _PROPERTY_SCALE.get(prop, 1.0)
+            w = priority_weights[i] if i < len(priority_weights) else 0.1
+            raw += w * abs(tp - bp) / scale
+
+        raw_scores.append((formula, raw))
+
+    if not raw_scores:
+        return []
+
+    # Normalise to 0–1
+    max_raw = max(s for _, s in raw_scores)
+    if max_raw <= 0:
+        max_raw = 1.0
+
+    results: list[dict[str, Any]] = []
+    for formula, raw in raw_scores:
+        norm_score = round(raw / max_raw, 4)
+        stars = max(1, min(5, round(norm_score * 5)))
+        info = _OXIDE_INFO.get(formula, {"name_ko": formula, "category": "other"})
+        results.append({
+            "formula": formula,
+            "name_ko": info["name_ko"],
+            "category": info["category"],
+            "score": norm_score,
+            "stars": stars,
+        })
+
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results
+
+
 # ── Bayesian Optimization ──────────────────────────────────────────
 
 # Common flux / modifier oxides to consider as extra dimensions
@@ -159,9 +272,11 @@ _COMMON_EXTRAS = [
 def _build_search_space(
     oxides_wt: dict[str, float],
     max_extras: int | None = None,
+    search_bounds: dict[str, dict[str, float]] | None = None,
 ) -> tuple[list[str], list[tuple[float, float]]]:
     """Build (oxide_names, bounds) from current wt% composition.
 
+    If *search_bounds* is provided, use those bounds for matching oxides.
     If *max_extras* is given, up to that many common oxides not already in
     the composition are appended with a 0–15 wt% range.
     """
@@ -169,7 +284,10 @@ def _build_search_space(
     bounds: list[tuple[float, float]] = []
     for formula, wt in oxides_wt.items():
         names.append(formula)
-        if wt <= 0:
+        if search_bounds and formula in search_bounds:
+            sb = search_bounds[formula]
+            bounds.append((sb.get("lo", 0.0), sb.get("hi", 100.0)))
+        elif wt <= 0:
             bounds.append((0.0, 15.0))
         else:
             delta = max(wt * 0.3, 5.0)
@@ -245,26 +363,29 @@ def _objective(
     return penalty
 
 
-def recommend_composition(
+def recommend_composition_streaming(
     oxides_wt: dict[str, float],
     property_targets: list[dict[str, Any]],
-    max_oxides: int | None = None,
+    search_bounds: dict[str, dict[str, float]] | None = None,
+    max_extras: int = 0,
     n_candidates: int = 5,
     n_calls: int = 40,
+    callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
-    """Recommend optimised glass compositions via Bayesian optimisation.
+    """Recommend compositions with per-iteration callback for streaming.
 
     Args:
         oxides_wt: Current composition in wt%.
         property_targets: List of ``{property, mode, target, min, max}``.
-        max_oxides: Max number of *additional* oxides (wt > 0.5%) beyond
-            the base oxides supplied in *oxides_wt*. ``None`` = no limit.
+        search_bounds: Optional per-oxide bounds ``{oxide: {lo, hi}}``.
+        max_extras: Extra common oxides to add to search space.
         n_candidates: Number of candidates to return.
         n_calls: Total evaluations for the optimiser.
+        callback: Called after each iteration with
+            ``{iteration, n_calls, best_score, current_score, best_wt}``.
 
     Returns:
-        List of candidates sorted by score (ascending):
-        ``[{oxides_wt: {…}, predicted: {…}, score: float}]``
+        List of candidates sorted by score (ascending).
     """
     from skopt import gp_minimize
     from skopt.space import Real
@@ -274,12 +395,36 @@ def recommend_composition(
 
     base_oxide_names = set(oxides_wt.keys())
 
-    oxide_names, bounds = _build_search_space(oxides_wt, max_extras=max_oxides)
+    oxide_names, bounds = _build_search_space(
+        oxides_wt, max_extras=max_extras, search_bounds=search_bounds,
+    )
 
     # Priority weights: rank 0 → 1.0, rank 1 → 0.5, rank 2 → 0.25, …
     weights = [0.5 ** i for i in range(len(property_targets))]
 
     dimensions = [Real(lo, hi, name=name) for name, (lo, hi) in zip(oxide_names, bounds)]
+
+    # Track iteration for callback
+    _iter_state = {"i": 0, "best_score": float("inf")}
+
+    def _skopt_callback(res):
+        _iter_state["i"] += 1
+        current = float(res.func_vals[-1])
+        if current < _iter_state["best_score"]:
+            _iter_state["best_score"] = current
+        if callback is not None:
+            # Best wt% so far
+            total = sum(res.x)
+            best_wt = {}
+            if total and total > 0:
+                best_wt = {n: round(v / total * 100.0, 2) for n, v in zip(oxide_names, res.x)}
+            callback({
+                "iteration": _iter_state["i"],
+                "n_calls": n_calls,
+                "best_score": round(_iter_state["best_score"], 4),
+                "current_score": round(current, 4),
+                "best_wt": best_wt,
+            })
 
     result = gp_minimize(
         func=lambda x: _objective(x, oxide_names, property_targets, weights),
@@ -287,6 +432,7 @@ def recommend_composition(
         n_calls=n_calls,
         n_random_starts=min(20, n_calls // 3),
         random_state=42,
+        callback=[_skopt_callback],
     )
 
     # Collect all evaluated points, sort by objective value
@@ -310,10 +456,10 @@ def recommend_composition(
             continue
         wt_norm = {name: round(v / total * 100.0, 2) for name, v in zip(oxide_names, x)}
 
-        # max_oxides filter — count only *new* oxides not in the original base set
-        if max_oxides is not None:
+        # max_extras filter — count only *new* oxides
+        if max_extras > 0:
             n_new = sum(1 for name, v in wt_norm.items() if v > 0.5 and name not in base_oxide_names)
-            if n_new > max_oxides:
+            if n_new > max_extras:
                 continue
 
         # Dedup (round to 1 decimal)
@@ -333,3 +479,20 @@ def recommend_composition(
         })
 
     return candidates
+
+
+def recommend_composition(
+    oxides_wt: dict[str, float],
+    property_targets: list[dict[str, Any]],
+    max_oxides: int | None = None,
+    n_candidates: int = 5,
+    n_calls: int = 40,
+) -> list[dict[str, Any]]:
+    """Backward-compatible wrapper around :func:`recommend_composition_streaming`."""
+    return recommend_composition_streaming(
+        oxides_wt=oxides_wt,
+        property_targets=property_targets,
+        max_extras=max_oxides or 0,
+        n_candidates=n_candidates,
+        n_calls=n_calls,
+    )
