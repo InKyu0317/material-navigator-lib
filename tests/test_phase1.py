@@ -259,5 +259,57 @@ def test_predict_from_wt_tand_range_soda_lime():
     )
 
 
+# ── 탐색 범위(search_bounds) 에러 케이스 ─────────────────────────────
+
+def test_search_bounds_lo_equals_hi_does_not_crash():
+    """Bug: lo == hi in search_bounds causes skopt ValueError.
+
+    When the user manually sets lo == hi (e.g. both to 70),
+    skopt.space.Real(lo, hi) raises: ValueError low >= high.
+    This test confirms the fix: it must NOT raise an exception.
+    """
+    from mat_nav_lib.recommend import _build_search_space
+
+    # lo == hi should be auto-corrected, not crash
+    names, bounds = _build_search_space(
+        oxides_wt={"SiO2": 70, "Na2O": 15, "CaO": 15},
+        search_bounds={"SiO2": {"lo": 70, "hi": 70}},   # lo == hi ← bug trigger
+    )
+    # All bounds must be strictly lo < hi (required by skopt)
+    for lo, hi in bounds:
+        assert lo < hi, f"Invalid bound: lo={lo} >= hi={hi}"
+
+
+def test_search_bounds_lo_greater_than_hi_does_not_crash():
+    """Bug: lo > hi in search_bounds causes skopt ValueError.
+
+    User can accidentally type a min larger than max in the UI.
+    Must be safely corrected to a valid range.
+    """
+    from mat_nav_lib.recommend import _build_search_space
+
+    names, bounds = _build_search_space(
+        oxides_wt={"SiO2": 70, "Na2O": 15, "CaO": 15},
+        search_bounds={"Na2O": {"lo": 25, "hi": 10}},   # lo > hi ← inverted
+    )
+    for lo, hi in bounds:
+        assert lo < hi, f"Invalid bound: lo={lo} >= hi={hi}"
+
+
+def test_recommend_streaming_with_lo_eq_hi_search_bounds():
+    """End-to-end: recommend_composition_streaming must not raise with lo==hi bounds."""
+    from mat_nav_lib import recommend_composition_streaming
+
+    # Should not raise, must return results
+    results = recommend_composition_streaming(
+        oxides_wt={"SiO2": 70, "Na2O": 15, "CaO": 15},
+        property_targets=[{"property": "Tg", "mode": "단일값", "target": 600}],
+        search_bounds={"SiO2": {"lo": 70, "hi": 70}},  # lo == hi
+        n_calls=10,
+        n_candidates=2,
+    )
+    assert isinstance(results, list)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
