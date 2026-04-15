@@ -193,5 +193,71 @@ def test_recommend_candidates_tg_in_celsius():
             )
 
 
+# ── CTE unit tests: GlassNet returns log10(K⁻¹), must convert to ×1e-7/°C ─
+
+# Reference: soda-lime glass CTE ≈ 85–92 ×10⁻⁷/°C
+_SODA_LIME = {"SiO2": 72, "Na2O": 13, "CaO": 9, "MgO": 4, "Al2O3": 1, "K2O": 1}
+
+
+def test_predict_from_wt_cte_is_not_log_scale():
+    """T7.1: CTE must be returned in ×1e-7/°C, NOT as log10(K⁻¹).
+
+    GlassNet CTEbelowTg raw ≈ -5.06 (log10 scale).
+    After conversion: 10^raw × 1e7 ≈ 87 ×1e-7/°C.
+    Without conversion the value would be around -5, which is nonsensical.
+    """
+    from mat_nav_lib import predict_from_wt
+
+    result = predict_from_wt(oxides_wt=_SODA_LIME, targets=["CTE"])
+    cte = result["CTE"]
+    assert cte > 1.0, (
+        f"CTE = {cte:.4f} — looks like log10 scale (should be > 1 in ×1e-7/°C). "
+        f"Expected ~87 ×1e-7/°C for soda-lime glass."
+    )
+    assert cte < 300, f"CTE = {cte:.1f} — seems too large."
+
+
+def test_predict_from_wt_cte_range_soda_lime():
+    """T7.1: soda-lime CTE should be in 70–110 ×1e-7/°C range."""
+    from mat_nav_lib import predict_from_wt
+
+    result = predict_from_wt(oxides_wt=_SODA_LIME, targets=["CTE"])
+    cte = result["CTE"]
+    assert 70 <= cte <= 110, (
+        f"CTE = {cte:.1f} ×1e-7/°C — outside expected 70–110 range for soda-lime glass."
+    )
+
+
+# ── tanδ unit tests: GlassNet returns log10(tanδ), must convert to linear ─
+
+def test_predict_from_wt_tand_is_not_log_scale():
+    """T7.2: tanδ must be returned as linear value, NOT as log10(tanδ).
+
+    GlassNet TangentOfLossAngle raw ≈ -2.19 (log10 scale).
+    After conversion: 10^raw ≈ 0.0065.
+    Without conversion the value would be negative, which is nonsensical.
+    """
+    from mat_nav_lib import predict_from_wt
+
+    result = predict_from_wt(oxides_wt=_SODA_LIME, targets=["tanδ"])
+    tand = result["tanδ"]
+    assert tand > 0, (
+        f"tanδ = {tand:.4f} — negative value means log10 not converted. "
+        f"Expected ~0.006 for soda-lime glass."
+    )
+    assert tand < 1.0, f"tanδ = {tand:.4f} — seems too large (should be < 1)."
+
+
+def test_predict_from_wt_tand_range_soda_lime():
+    """T7.2: soda-lime tanδ should be in 0.0001–0.1 range."""
+    from mat_nav_lib import predict_from_wt
+
+    result = predict_from_wt(oxides_wt=_SODA_LIME, targets=["tanδ"])
+    tand = result["tanδ"]
+    assert 0.0001 <= tand <= 0.1, (
+        f"tanδ = {tand:.6f} — outside expected 0.0001–0.1 range for soda-lime glass."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

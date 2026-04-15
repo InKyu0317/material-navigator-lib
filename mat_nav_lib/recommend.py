@@ -95,11 +95,18 @@ PROPERTY_MAP: dict[str, str] = {
 # GlassNet returns these columns in Kelvin; must subtract 273.15 for °C output.
 _KELVIN_PROPERTIES: frozenset[str] = frozenset({"Tg", "Ts", "Tc"})
 
-# Typical scale for normalizing deviations (order-of-magnitude)
+# GlassNet returns these columns as log₁₀ values; must apply 10^x (× multiplier) conversion.
+# Format: {ui_prop: multiplier}  →  value = 10^raw * multiplier
+_LOG10_PROPERTIES: dict[str, float] = {
+    "CTE": 1e7,   # log10(K⁻¹) → ×10⁻⁷/°C
+    "tanδ": 1.0,  # log10(tanδ) → tanδ (linear)
+}
+
+# Typical scale for normalizing deviations (order-of-magnitude, after unit conversion)
 _PROPERTY_SCALE: dict[str, float] = {
     "Tg": 100.0,
     "Ts": 100.0,
-    "CTE": 20.0,
+    "CTE": 30.0,   # ×1e-7/°C units; soda-lime ~87, borosilicate ~32
     "Tc": 100.0,
     "Density": 0.5,
     "Young's modulus": 20.0,
@@ -109,7 +116,7 @@ _PROPERTY_SCALE: dict[str, float] = {
     "Vd": 10.0,
     "Viscosity": 2.0,
     "ε": 2.0,
-    "tanδ": 0.01,
+    "tanδ": 0.005,  # linear tanδ units; typical 0.001–0.02
 }
 
 
@@ -151,6 +158,9 @@ def predict_properties(
             # GlassNet returns temperature properties in Kelvin → convert to °C
             if prop in _KELVIN_PROPERTIES:
                 value -= 273.15
+            # GlassNet returns some properties as log₁₀ → convert to linear
+            elif prop in _LOG10_PROPERTIES:
+                value = (10.0 ** value) * _LOG10_PROPERTIES[prop]
             result[prop] = value
     return result
 
