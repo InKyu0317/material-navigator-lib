@@ -10,6 +10,14 @@ from .oxides import OXIDE_LIST
 # ── Lookup table: formula → molar_mass ──────────────────────────────
 _MOLAR_MASS: dict[str, float] = {o["formula"]: o["molar_mass"] for o in OXIDE_LIST}
 
+# Unicode subscript digits → ASCII (e.g. SiO₂ → SiO2)
+_SUB_TABLE = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+
+
+def _normalise_formula(formula: str) -> str:
+    """Convert unicode subscript notation to plain ASCII."""
+    return formula.translate(_SUB_TABLE)
+
 
 # ── wt% ↔ mol% conversion ──────────────────────────────────────────
 
@@ -27,10 +35,11 @@ def wt_to_mol(oxides_wt: dict[str, float]) -> dict[str, float]:
     """
     moles = {}
     for formula, wt in oxides_wt.items():
-        mm = _MOLAR_MASS.get(formula)
+        key = _normalise_formula(formula)
+        mm = _MOLAR_MASS.get(key)
         if mm is None:
             raise KeyError(f"Unknown oxide formula: {formula!r}")
-        moles[formula] = wt / mm if mm > 0 else 0.0
+        moles[key] = wt / mm if mm > 0 else 0.0
 
     total = sum(moles.values())
     if total == 0:
@@ -52,10 +61,11 @@ def mol_to_wt(oxides_mol: dict[str, float]) -> dict[str, float]:
     """
     weights = {}
     for formula, mol in oxides_mol.items():
-        mm = _MOLAR_MASS.get(formula)
+        key = _normalise_formula(formula)
+        mm = _MOLAR_MASS.get(key)
         if mm is None:
             raise KeyError(f"Unknown oxide formula: {formula!r}")
-        weights[formula] = mol * mm
+        weights[key] = mol * mm
 
     total = sum(weights.values())
     if total == 0:
@@ -139,10 +149,22 @@ def predict_properties(
 
 # ── Bayesian Optimization ──────────────────────────────────────────
 
+# Common flux / modifier oxides to consider as extra dimensions
+_COMMON_EXTRAS = [
+    "Na2O", "K2O", "Li2O", "CaO", "MgO", "BaO", "ZnO",
+    "B2O3", "PbO", "SrO", "TiO2", "ZrO2", "La2O3", "Fe2O3",
+]
+
+
 def _build_search_space(
     oxides_wt: dict[str, float],
+    max_extras: int | None = None,
 ) -> tuple[list[str], list[tuple[float, float]]]:
-    """Build (oxide_names, bounds) from current wt% composition."""
+    """Build (oxide_names, bounds) from current wt% composition.
+
+    If *max_extras* is given, up to that many common oxides not already in
+    the composition are appended with a 0–15 wt% range.
+    """
     names: list[str] = []
     bounds: list[tuple[float, float]] = []
     for formula, wt in oxides_wt.items():
@@ -154,6 +176,19 @@ def _build_search_space(
             lo = max(0.0, wt - delta)
             hi = min(100.0, wt + delta)
             bounds.append((lo, hi))
+
+    # Add extra common oxides not already present
+    if max_extras and max_extras > 0:
+        existing = set(names)
+        added = 0
+        for formula in _COMMON_EXTRAS:
+            if formula not in existing and formula in _MOLAR_MASS:
+                names.append(formula)
+                bounds.append((0.0, 15.0))
+                added += 1
+                if added >= max_extras:
+                    break
+
     return names, bounds
 
 
@@ -215,14 +250,15 @@ def recommend_composition(
     property_targets: list[dict[str, Any]],
     max_oxides: int | None = None,
     n_candidates: int = 5,
-    n_calls: int = 80,
+    n_calls: int = 40,
 ) -> list[dict[str, Any]]:
     """Recommend optimised glass compositions via Bayesian optimisation.
 
     Args:
         oxides_wt: Current composition in wt%.
         property_targets: List of ``{property, mode, target, min, max}``.
-        max_oxides: Max number of oxides with wt > 0.5%. ``None`` = no limit.
+        max_oxides: Max number of *additional* oxides (wt > 0.5%) beyond
+            the base oxides supplied in *oxides_wt*. ``None`` = no limit.
         n_candidates: Number of candidates to return.
         n_calls: Total evaluations for the optimiser.
 
@@ -233,7 +269,12 @@ def recommend_composition(
     from skopt import gp_minimize
     from skopt.space import Real
 
-    oxide_names, bounds = _build_search_space(oxides_wt)
+    # Normalise formula keys (unicode subscripts → ASCII)
+    oxides_wt = {_normalise_formula(k): v for k, v in oxides_wt.items()}
+
+    base_oxide_names = set(oxides_wt.keys())
+
+    oxide_names, bounds = _build_search_space(oxides_wt, max_extras=max_oxides)
 
     # Priority weights: rank 0 → 1.0, rank 1 → 0.5, rank 2 → 0.25, …
     weights = [0.5 ** i for i in range(len(property_targets))]
@@ -269,10 +310,10 @@ def recommend_composition(
             continue
         wt_norm = {name: round(v / total * 100.0, 2) for name, v in zip(oxide_names, x)}
 
-        # max_oxides filter
+        # max_oxides filter — count only *new* oxides not in the original base set
         if max_oxides is not None:
-            n_active = sum(1 for v in wt_norm.values() if v > 0.5)
-            if n_active > max_oxides:
+            n_new = sum(1 for name, v in wt_norm.items() if v > 0.5 and name not in base_oxide_names)
+            if n_new > max_oxides:
                 continue
 
         # Dedup (round to 1 decimal)
