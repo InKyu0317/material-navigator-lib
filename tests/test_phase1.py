@@ -135,5 +135,63 @@ def test_recommend_composition_backward_compat():
     assert len(results) > 0
 
 
+# ── Tg unit tests: GlassNet returns Kelvin, must convert to Celsius ─
+
+def test_predict_from_wt_tg_is_celsius_not_kelvin():
+    """T-UNIT: predict_from_wt must return Tg in °C, not Kelvin.
+
+    GlassNet internally returns Tg in Kelvin (~1100-1500 K range).
+    predict_from_wt must subtract 273.15 before returning.
+    SiO2:70 / Al2O3:20 / K2O:10 → Tg should be in 750–1000 °C range,
+    NOT in the 1100–1500 K range.
+    """
+    from mat_nav_lib import predict_from_wt
+
+    result = predict_from_wt(
+        oxides_wt={"SiO2": 70, "Al2O3": 20, "K2O": 10},
+        targets=["Tg"],
+    )
+    tg = result["Tg"]
+    # If returned in Kelvin, tg > 1100. If correctly in Celsius, tg < 1000.
+    assert tg < 1000, (
+        f"Tg = {tg:.1f}  — looks like Kelvin, not °C. "
+        f"Expected < 1000 °C (after K→°C conversion)."
+    )
+    assert tg > 600, f"Tg = {tg:.1f} °C seems too low."
+
+
+def test_predict_from_wt_ts_is_celsius_not_kelvin():
+    """T-UNIT: Ts (strain point) must also be returned in °C."""
+    from mat_nav_lib import predict_from_wt
+
+    result = predict_from_wt(
+        oxides_wt={"SiO2": 70, "Na2O": 15, "CaO": 15},
+        targets=["Ts"],
+    )
+    ts = result["Ts"]
+    assert ts < 1000, (
+        f"Ts = {ts:.1f}  — looks like Kelvin, not °C."
+    )
+    assert ts > 300
+
+
+def test_recommend_candidates_tg_in_celsius():
+    """T-UNIT: recommended candidates must have Tg in °C, not Kelvin."""
+    from mat_nav_lib import recommend_composition
+
+    results = recommend_composition(
+        oxides_wt={"SiO2": 70, "Na2O": 15, "CaO": 15},
+        property_targets=[{"property": "Tg", "mode": "단일값", "target": 600}],
+        n_calls=15,
+        n_candidates=2,
+    )
+    for candidate in results:
+        tg = candidate["predicted"].get("Tg")
+        if tg is not None:
+            assert tg < 1000, (
+                f"Candidate Tg = {tg:.1f} — looks like Kelvin. Expected °C."
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

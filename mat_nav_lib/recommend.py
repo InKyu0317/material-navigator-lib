@@ -92,6 +92,9 @@ PROPERTY_MAP: dict[str, str] = {
     "tanδ": "TangentOfLossAngle",
 }
 
+# GlassNet returns these columns in Kelvin; must subtract 273.15 for °C output.
+_KELVIN_PROPERTIES: frozenset[str] = frozenset({"Tg", "Ts", "Tc"})
+
 # Typical scale for normalizing deviations (order-of-magnitude)
 _PROPERTY_SCALE: dict[str, float] = {
     "Tg": 100.0,
@@ -144,7 +147,11 @@ def predict_properties(
     for prop in targets:
         col = PROPERTY_MAP.get(prop)
         if col and col in df.columns:
-            result[prop] = float(df[col].iloc[0])
+            value = float(df[col].iloc[0])
+            # GlassNet returns temperature properties in Kelvin → convert to °C
+            if prop in _KELVIN_PROPERTIES:
+                value -= 273.15
+            result[prop] = value
     return result
 
 
