@@ -303,8 +303,8 @@ def _build_search_space(
         names.append(formula)
         if search_bounds and formula in search_bounds:
             sb = search_bounds[formula]
-            lo = sb.get("lo", 0.0)
-            hi = sb.get("hi", 100.0)
+            lo = float(sb.get("lo", 0.0))
+            hi = float(sb.get("hi", 100.0))
             # Ensure valid range for skopt: lo must be strictly < hi.
             # Swap inverted bounds; if equal, expand hi by 1 wt%.
             if lo > hi:
