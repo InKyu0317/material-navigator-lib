@@ -497,10 +497,12 @@ def recommend_composition_streaming(
         oxides_mol = wt_to_mol(wt_norm)
         predicted = predict_properties(oxides_mol, target_names)
 
+        score_val = round(float(score), 4)
         candidates.append({
             "oxides_wt": wt_norm,
             "predicted": predicted,
-            "score": round(float(score), 4),
+            "score": score_val,
+            "fitness": round(100.0 / (1.0 + score_val), 2),
         })
 
     return candidates
